@@ -48,6 +48,16 @@ openspec/
 CLAUDE.md
 claude.md
 
+# 内部开发文档（不开源）
+docs/
+!docs/STORY-STATE-GUIDE.md
+
+# 内部报告和设计文档（不开源）
+BUILD-REPORT.md
+FRONTEND_REDESIGN.md
+desktop-tauri/src/DESKTOP_REDESIGN.md
+desktop-tauri/src/styles/DESKTOP_V2_MIGRATION.md
+
 # OS / editor
 .DS_Store
 Thumbs.db
