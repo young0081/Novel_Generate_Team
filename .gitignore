@@ -44,6 +44,7 @@ installer/dist-out/
 # Agent / CLI 相关（本地开发配置，不上传）
 .claude/
 .codex/
+openspec/
 CLAUDE.md
 claude.md
 
