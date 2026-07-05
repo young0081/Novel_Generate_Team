@@ -334,9 +334,7 @@ npm run tauri dev
 
 ### 架构文档
 
-- [核心架构说明](./CLAUDE.md) - 完整技术栈、目录结构、命令清单
 - [Story State 使用指南](./docs/STORY-STATE-GUIDE.md) - 剧情状态管理系统
-- [构建报告](./BUILD-REPORT.md) - 各阶段验证结果
 
 ---
 

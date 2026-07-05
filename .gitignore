@@ -58,6 +58,9 @@ FRONTEND_REDESIGN.md
 desktop-tauri/src/DESKTOP_REDESIGN.md
 desktop-tauri/src/styles/DESKTOP_V2_MIGRATION.md
 
+# 构建脚本（包含本地路径和证书信息）
+rebuild-installer.sh
+
 # OS / editor
 .DS_Store
 Thumbs.db
