@@ -245,4 +245,144 @@ class LocalStorage {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('ai_provider', jsonEncode(p.toJson()));
   }
+
+  // ── 历史会话 CRUD ─────────────────────────────────────────────────
+
+  Future<List<ConversationRecord>> listConversations() async {
+    final raw = await _readList('conversations.json');
+    return raw.map(ConversationRecord.fromJson).toList()
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+  }
+
+  Future<void> saveConversation(ConversationRecord conv) async {
+    final all = await listConversations();
+    conv.updatedAt = DateTime.now();
+    final idx = all.indexWhere((c) => c.id == conv.id);
+    if (idx >= 0) all[idx] = conv; else all.insert(0, conv);
+    // 最多保留 100 条
+    final trimmed = all.take(100).toList();
+    await _writeList('conversations.json',
+        trimmed.map((c) => c.toJson()).toList());
+  }
+
+  Future<void> deleteConversation(String id) async {
+    final all = await listConversations();
+    all.removeWhere((c) => c.id == id);
+    await _writeList('conversations.json',
+        all.map((c) => c.toJson()).toList());
+  }
+}
+
+// ── 历史会话记录 ─────────────────────────────────────────────────────
+
+class ConversationMessage {
+  final String role; // 'user' | 'assistant'
+  final String content;
+  final DateTime timestamp;
+
+  const ConversationMessage({
+    required this.role,
+    required this.content,
+    required this.timestamp,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'role': role,
+    'content': content,
+    'timestamp': timestamp.toIso8601String(),
+  };
+
+  factory ConversationMessage.fromJson(Map<String, dynamic> j) =>
+      ConversationMessage(
+        role: j['role'] as String? ?? 'user',
+        content: j['content'] as String? ?? '',
+        timestamp: DateTime.tryParse(j['timestamp'] as String? ?? '') ??
+            DateTime.now(),
+      );
+}
+
+class ConversationRecord {
+  final String id;
+  String title;
+  List<ConversationMessage> messages;
+  final DateTime createdAt;
+  DateTime updatedAt;
+  String providerName;
+  String modelName;
+
+  ConversationRecord({
+    required this.id,
+    required this.title,
+    required this.messages,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.providerName,
+    required this.modelName,
+  });
+
+  /// 自动从第一条用户消息提取标题
+  static String titleFrom(List<ConversationMessage> msgs) {
+    final first = msgs.firstWhere(
+      (m) => m.role == 'user' && m.content.isNotEmpty,
+      orElse: () => ConversationMessage(
+        role: 'user', content: '新对话', timestamp: DateTime.now()),
+    );
+    final text = first.content.replaceAll('\n', ' ').trim();
+    return text.length > 18 ? '${text.substring(0, 18)}…' : text;
+  }
+
+  /// 最后一条助手消息的文本预览
+  String get preview {
+    final last = messages.lastWhere(
+      (m) => m.role == 'assistant' && m.content.isNotEmpty,
+      orElse: () => ConversationMessage(
+        role: 'assistant', content: '', timestamp: DateTime.now()),
+    );
+    final text = last.content.replaceAll('\n', ' ').trim();
+    return text.length > 40 ? '${text.substring(0, 40)}…' : text;
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'title': title,
+    'messages': messages.map((m) => m.toJson()).toList(),
+    'createdAt': createdAt.toIso8601String(),
+    'updatedAt': updatedAt.toIso8601String(),
+    'providerName': providerName,
+    'modelName': modelName,
+  };
+
+  factory ConversationRecord.fromJson(Map<String, dynamic> j) {
+    final msgs = (j['messages'] as List? ?? [])
+        .map((e) =>
+            ConversationMessage.fromJson(e as Map<String, dynamic>))
+        .toList();
+    return ConversationRecord(
+      id: j['id'] as String? ?? '',
+      title: j['title'] as String? ?? '对话',
+      messages: msgs,
+      createdAt:
+          DateTime.tryParse(j['createdAt'] as String? ?? '') ?? DateTime.now(),
+      updatedAt:
+          DateTime.tryParse(j['updatedAt'] as String? ?? '') ?? DateTime.now(),
+      providerName: j['providerName'] as String? ?? '',
+      modelName: j['modelName'] as String? ?? '',
+    );
+  }
+
+  factory ConversationRecord.create({
+    required String providerName,
+    required String modelName,
+  }) {
+    final now = DateTime.now();
+    return ConversationRecord(
+      id: 'conv_${now.millisecondsSinceEpoch}',
+      title: '新对话',
+      messages: [],
+      createdAt: now,
+      updatedAt: now,
+      providerName: providerName,
+      modelName: modelName,
+    );
+  }
 }
