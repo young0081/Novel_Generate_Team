@@ -16,21 +16,29 @@ enum _Role { user, assistant }
 
 class _Message {
   final _Role role;
-  final String text;           // 最终文本（或已打出的文本）
+  final String text;           // 正式回复文本（逐字打出的）
   final bool streaming;        // AI 正在生成中
-  final bool reasoning;        // 正在思考（还没开始输出内容）
+  final bool reasoning;        // 等待第一个 token（显示脉冲动画）
+  final String reasoningText;  // 思维链内容（DeepSeek-R1 / o1 等）
   const _Message({
     required this.role,
     required this.text,
     this.streaming = false,
     this.reasoning = false,
+    this.reasoningText = '',
   });
-  _Message copyWith({String? text, bool? streaming, bool? reasoning}) =>
+  _Message copyWith({
+    String? text,
+    bool? streaming,
+    bool? reasoning,
+    String? reasoningText,
+  }) =>
       _Message(
         role: role,
         text: text ?? this.text,
         streaming: streaming ?? this.streaming,
         reasoning: reasoning ?? this.reasoning,
+        reasoningText: reasoningText ?? this.reasoningText,
       );
 }
 
@@ -274,8 +282,9 @@ class _StudioScreenState extends State<StudioScreen> {
 
       final client = AiClient(provider);
 
-      // 2. 第一个 token 到来时切换到打字机模式
+      // 2. 思维链累积缓冲（reasoning_content 字段）
       bool firstToken = true;
+      final reasoningBuf = StringBuffer();
 
       // 启动打字机（定时器）
       _typer.start(() {
@@ -294,11 +303,24 @@ class _StudioScreenState extends State<StudioScreen> {
 
       await client.chatStream(
         [AiMessage(role: 'system', content: systemPrompt), ...history],
+        onReasoning: (chunk) {
+          if (!mounted) return;
+          reasoningBuf.write(chunk);
+          // 实时更新思维链展示（保持 reasoning:true，仅更新 reasoningText）
+          setState(() {
+            final idx = _messages.lastIndexWhere((m) => m.streaming);
+            if (idx != -1) {
+              _messages[idx] = _messages[idx].copyWith(
+                reasoningText: reasoningBuf.toString(),
+              );
+            }
+          });
+          _scrollToBottom();
+        },
         onToken: (token) {
           if (!mounted) return;
           if (firstToken) {
             firstToken = false;
-            // 消除"推理中"状态
             setState(() {
               final idx = _messages.lastIndexWhere((m) => m.streaming);
               if (idx != -1) {
@@ -324,11 +346,16 @@ class _StudioScreenState extends State<StudioScreen> {
 
       if (!mounted) return;
       final finalText = _typer.displayed;
+      final finalReasoning = reasoningBuf.toString();
       setState(() {
         final idx = _messages.lastIndexWhere((m) => m.streaming);
         if (idx != -1) {
           _messages[idx] = _messages[idx].copyWith(
-            text: finalText, streaming: false, reasoning: false);
+            text: finalText,
+            streaming: false,
+            reasoning: false,
+            reasoningText: finalReasoning,
+          );
         }
       });
       _typer.reset();
@@ -698,8 +725,13 @@ class _MessageList extends StatelessWidget {
       itemBuilder: (context, i) {
         final msg = messages[i];
         if (msg.role == _Role.user) return _UserBubble(text: msg.text);
-        if (msg.reasoning) return const _ReasoningBubble();
-        return _AssistantBubble(text: msg.text, streaming: msg.streaming);
+        if (msg.reasoning && msg.reasoningText.isEmpty) return const _ReasoningBubble();
+        return _AssistantBubble(
+          text: msg.text,
+          streaming: msg.streaming,
+          reasoningText: msg.reasoningText,
+          isReasoning: msg.reasoning,
+        );
       },
     );
   }
@@ -806,44 +838,71 @@ class _UserBubble extends StatelessWidget {
   }
 }
 
-// ── AI 气泡（含逐字打字机光标，Task #9）──────────────────────────
+// ── AI 气泡（含思维链 + 逐字光标）─────────────────────────────────
 class _AssistantBubble extends StatelessWidget {
   final String text;
   final bool streaming;
-  const _AssistantBubble({required this.text, required this.streaming});
+  final String reasoningText;
+  final bool isReasoning; // 正在输出思维链（尚未开始正式回复）
+  const _AssistantBubble({
+    required this.text,
+    required this.streaming,
+    this.reasoningText = '',
+    this.isReasoning = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12, right: 48),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         _AiAvatar(),
         const SizedBox(width: 8),
         Flexible(
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: InkPalette.paperHi,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(3), topRight: Radius.circular(14),
-                bottomLeft: Radius.circular(14),
-                bottomRight: Radius.circular(14)),
-              border: Border.all(color: InkPalette.line, width: 0.8)),
-            child: text.isEmpty
-                ? const _ThinkingDots()
-                : Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SelectableText(text,
-                        style: const TextStyle(
-                          fontSize: 13.5, color: InkPalette.ink, height: 1.6)),
-                      if (streaming)
-                        const Padding(
-                          padding: EdgeInsets.only(top: 3),
-                          child: _InkCaret()),
-                    ],
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // ── 思维链（有内容时展示可折叠块）──
+              if (reasoningText.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: _ReasoningChain(
+                    text: reasoningText,
+                    streaming: isReasoning,
                   ),
+                ),
+              // ── 正式回复气泡 ──
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: InkPalette.paperHi,
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(3),
+                    topRight: Radius.circular(14),
+                    bottomLeft: Radius.circular(14),
+                    bottomRight: Radius.circular(14)),
+                  border: Border.all(color: InkPalette.line, width: 0.8)),
+                child: text.isEmpty
+                    ? (isReasoning ? const SizedBox.shrink() : const _ThinkingDots())
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SelectableText(text,
+                            style: const TextStyle(
+                              fontSize: 13.5,
+                              color: InkPalette.ink,
+                              height: 1.6)),
+                          if (streaming)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 3),
+                              child: _InkCaret()),
+                        ],
+                      ),
+              ),
+            ],
           ),
         ),
       ]),
@@ -852,6 +911,134 @@ class _AssistantBubble extends StatelessWidget {
 }
 
 // AI 头像（共用）
+// ── 思维链可折叠块（Task #10）────────────────────────────────────
+class _ReasoningChain extends StatefulWidget {
+  final String text;
+  final bool streaming; // 思维链还在增长时为 true
+  const _ReasoningChain({required this.text, required this.streaming});
+
+  @override
+  State<_ReasoningChain> createState() => _ReasoningChainState();
+}
+
+class _ReasoningChainState extends State<_ReasoningChain> {
+  bool _expanded = true; // 默认展开；思维链结束后自动折叠
+
+  @override
+  void didUpdateWidget(_ReasoningChain old) {
+    super.didUpdateWidget(old);
+    // 模型开始输出正式回复时（streaming → false）自动折叠
+    if (old.streaming && !widget.streaming) {
+      setState(() => _expanded = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFF0EAE0), // 比宣纸稍深一点
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: InkPalette.line, width: 0.8),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // 折叠头部
+          GestureDetector(
+            onTap: () => setState(() => _expanded = !_expanded),
+            behavior: HitTestBehavior.opaque,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  // 运笔脉冲小点（思维链仍在输出时）
+                  if (widget.streaming) ...[
+                    _PulsingDot(),
+                    const SizedBox(width: 6),
+                  ] else ...[
+                    const Icon(Icons.psychology_outlined,
+                        size: 14, color: InkPalette.ink4),
+                    const SizedBox(width: 6),
+                  ],
+                  Expanded(
+                    child: Text(
+                      widget.streaming ? '正在推理…' : '查看推理过程',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontStyle: FontStyle.italic,
+                        color: InkPalette.ink3,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    _expanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    size: 16,
+                    color: InkPalette.ink4,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // 思维链文本（展开时可见）
+          if (_expanded)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+              child: SelectableText(
+                widget.text,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: InkPalette.ink3,
+                  height: 1.55,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 脉冲小点：思维链输出中时显示
+class _PulsingDot extends StatefulWidget {
+  @override
+  State<_PulsingDot> createState() => _PulsingDotState();
+}
+
+class _PulsingDotState extends State<_PulsingDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 800),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: Tween<double>(begin: 0.3, end: 1.0).animate(_c),
+      child: Container(
+        width: 7,
+        height: 7,
+        decoration: BoxDecoration(
+          color: InkPalette.cinnabar,
+          shape: BoxShape.circle,
+        ),
+      ),
+    );
+  }
+}
+
 class _AiAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {

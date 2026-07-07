@@ -96,14 +96,15 @@ class AiClient {
 
   AiClient(this.provider);
 
-  // 流式聊天：每收到一个 token 调用 onToken，完成后 Future 结束
+  // 流式聊天：每收到一个 content token 调用 onToken；推理模型的思维链通过 onReasoning 传出
   Future<String> chatStream(
     List<AiMessage> messages, {
     required void Function(String token) onToken,
+    void Function(String reasoning)? onReasoning,
     int maxTokens = 2048,
   }) async {
     return switch (provider.protocol) {
-      AiProtocol.openAi => _openAiStream(messages, onToken, maxTokens),
+      AiProtocol.openAi => _openAiStream(messages, onToken, maxTokens, onReasoning),
       AiProtocol.anthropic => _anthropicStream(messages, onToken, maxTokens),
     };
   }
@@ -121,6 +122,7 @@ class AiClient {
     List<AiMessage> messages,
     void Function(String) onToken,
     int maxTokens,
+    void Function(String)? onReasoning,
   ) async {
     final uri = Uri.parse('${provider.baseUrl}/chat/completions');
     final req = http.Request('POST', uri)
@@ -150,8 +152,15 @@ class AiClient {
         if (data == '[DONE]') break;
         try {
           final json = jsonDecode(data) as Map<String, dynamic>;
-          final delta = (json['choices'] as List?)
-              ?.firstOrNull?['delta']?['content'] as String?;
+          final deltaMap = (json['choices'] as List?)
+              ?.firstOrNull?['delta'] as Map<String, dynamic>?;
+          // 思维链（DeepSeek-R1 / o1 等推理模型）
+          final reasoning = deltaMap?['reasoning_content'] as String?;
+          if (reasoning != null && reasoning.isNotEmpty) {
+            onReasoning?.call(reasoning);
+          }
+          // 正式回复
+          final delta = deltaMap?['content'] as String?;
           if (delta != null && delta.isNotEmpty) {
             buf.write(delta);
             onToken(delta);
